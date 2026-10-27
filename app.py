@@ -1,13 +1,20 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import wraps
+import secrets
 from urllib.parse import urlparse
-from flask import Flask, render_template, request, redirect, url_for, abort, jsonify
+from flask import Flask, render_template, request, redirect, url_for, abort, jsonify, session, flash
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 from bson import ObjectId
 from werkzeug.exceptions import HTTPException
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY") or (secrets.token_hex(32) if not os.environ.get("RENDER") else "")
+if not app.secret_key:
+    raise RuntimeError("Configura SECRET_KEY en Render.")
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")))
 mongo_uri = os.environ.get('MONGO_URI')
 if not mongo_uri:
     if os.environ.get('RENDER'):
@@ -15,6 +22,8 @@ if not mongo_uri:
     mongo_uri = 'mongodb://127.0.0.1:27017/'
 cliente = MongoClient(mongo_uri, serverSelectionTimeoutMS=10000)
 juegos = cliente['game_shop']['videojuegos']
+usuarios = cliente['game_shop']['usuarios']
+pedidos = cliente['game_shop']['pedidos']
 CATEGORIAS = ['Acción','Aventura','Terror','Carreras','Deportes','Estrategia','RPG','Simulación','Multijugador','Otros']
 
 def validar_imagen(url):
@@ -56,6 +65,139 @@ def buscar_juego(id):
 def serializar(j):
     return {'id':str(j['_id']),**{k:j.get(k, '' if k not in ('precio','stock') else 0) for k in
         ('nombre','categoria','descripcion','desarrollador','precio','stock','imagen','banner')}}
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not session.get('usuario_id'):
+            flash('Inicia sesión para finalizar tu compra.', 'info')
+            return redirect(url_for('login'))
+        return fn(*args, **kwargs)
+    return wrapper
+
+@app.context_processor
+def datos_sesion():
+    return {'usuario_actual': session.get('usuario_nombre'), 'carrito_cantidad': sum(session.get('carrito', {}).values())}
+
+@app.before_request
+def proteger_formularios():
+    if request.method == 'POST' and not request.path.startswith('/api/'):
+        token = session.get('csrf_token')
+        if not token or not secrets.compare_digest(request.form.get('_csrf', ''), token):
+            abort(400, description='Formulario caducado. Actualiza la página e inténtalo nuevamente.')
+
+@app.context_processor
+def csrf_template():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(24)
+    return {'csrf_token': session['csrf_token']}
+
+@app.route('/crear-cuenta', methods=['GET','POST'])
+def crear_cuenta():
+    if request.method == 'POST':
+        nombre = request.form.get('nombre', '').strip()
+        correo = request.form.get('correo', '').strip().lower()
+        clave = request.form.get('clave', '')
+        if not (2 <= len(nombre) <= 80) or not (5 <= len(correo) <= 254) or '@' not in correo or not (8 <= len(clave) <= 128):
+            flash('Revisa los datos. La contraseña debe tener al menos 8 caracteres.', 'error')
+        elif usuarios.find_one({'correo': correo}):
+            flash('Ese correo ya está registrado.', 'error')
+        else:
+            usuarios.create_index('correo', unique=True)
+            from pymongo.errors import DuplicateKeyError
+            try:
+                doc = usuarios.insert_one({'nombre':nombre,'correo':correo,'clave_hash':generate_password_hash(clave),'creado':datetime.now(timezone.utc)})
+                session.clear()
+                session['usuario_id'] = str(doc.inserted_id)
+                session['usuario_nombre'] = nombre
+                flash('¡Cuenta creada correctamente!', 'ok')
+                return redirect(url_for('carrito'))
+            except DuplicateKeyError:
+                flash('Ese correo ya está registrado.', 'error')
+    return render_template('crear_cuenta.html')
+
+@app.route('/iniciar-sesion', methods=['GET','POST'])
+def login():
+    if request.method == 'POST':
+        correo = request.form.get('correo', '').strip().lower()
+        usuario = usuarios.find_one({'correo':correo})
+        if usuario and check_password_hash(usuario['clave_hash'], request.form.get('clave','')):
+            carrito_guardado = session.get('carrito', {})
+            session.clear()
+            session['usuario_id'] = str(usuario['_id'])
+            session['usuario_nombre'] = usuario['nombre']
+            session['carrito'] = carrito_guardado
+            flash('¡Bienvenido a Game Shop!', 'ok')
+            return redirect(url_for('carrito'))
+        flash('Correo o contraseña incorrectos.', 'error')
+    return render_template('login.html')
+
+@app.route('/cerrar-sesion', methods=['POST'])
+def logout():
+    session.clear()
+    flash('Sesión cerrada.', 'ok')
+    return redirect(url_for('inicio'))
+
+@app.route('/carrito/agregar/<id>', methods=['POST'])
+def carrito_agregar(id):
+    juego = buscar_juego(id)
+    carrito = dict(session.get('carrito', {}))
+    if int(juego.get('stock',0)) <= int(carrito.get(id,0)):
+        flash('No hay suficientes unidades disponibles.', 'error')
+    else:
+        carrito[id] = int(carrito.get(id,0)) + 1
+        session['carrito'] = carrito
+        flash('Videojuego agregado al carrito.', 'ok')
+    return redirect(url_for('carrito'))
+
+@app.route('/carrito')
+def carrito():
+    elementos = []
+    total = 0
+    for id, cantidad in session.get('carrito', {}).items():
+        if not ObjectId.is_valid(id): continue
+        juego = juegos.find_one({'_id':ObjectId(id)})
+        if juego:
+            subtotal = round(float(juego['precio']) * int(cantidad),2)
+            total += subtotal
+            elementos.append({'juego':juego,'cantidad':cantidad,'subtotal':subtotal})
+    return render_template('carrito.html', elementos=elementos, total=round(total,2))
+
+@app.route('/carrito/quitar/<id>', methods=['POST'])
+def carrito_quitar(id):
+    carrito = dict(session.get('carrito', {}))
+    carrito.pop(id, None)
+    session['carrito'] = carrito
+    return redirect(url_for('carrito'))
+
+@app.route('/comprar', methods=['POST'])
+@login_required
+def comprar():
+    carrito = session.get('carrito', {})
+    if not carrito:
+        flash('Tu carrito está vacío.', 'error')
+        return redirect(url_for('carrito'))
+    items=[]
+    for id, cantidad in carrito.items():
+        if not ObjectId.is_valid(id) or not isinstance(cantidad,int) or cantidad < 1 or cantidad > 100:
+            abort(400, description='Carrito inválido.')
+        juego=juegos.find_one({'_id':ObjectId(id)})
+        if not juego or int(juego.get('stock',0)) < cantidad:
+            flash('Algún videojuego ya no tiene existencias suficientes.', 'error')
+            return redirect(url_for('carrito'))
+        items.append({'id':id,'nombre':juego['nombre'],'cantidad':cantidad,'precio':float(juego['precio'])})
+    # Compra simulada: no descuenta stock para evitar reservas parciales sin transacciones.
+    total=round(sum(i['precio']*i['cantidad'] for i in items),2)
+    pedidos.insert_one({'usuario_id':ObjectId(session['usuario_id']),'items':items,'total':total,'fecha':datetime.now(timezone.utc),'estado':'Simulada'})
+    session['carrito']={}
+    flash('¡Compra simulada registrada correctamente! No se realizó ningún cobro.', 'ok')
+    return redirect(url_for('mis_compras'))
+
+@app.route('/mis-compras')
+@login_required
+def mis_compras():
+    lista=list(pedidos.find({'usuario_id':ObjectId(session['usuario_id'])}).sort('fecha',-1))
+    return render_template('mis_compras.html', pedidos=lista)
 
 @app.route('/')
 def inicio():
