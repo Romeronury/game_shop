@@ -74,10 +74,39 @@ def login_required(fn):
             return redirect(url_for('login'))
         return fn(*args, **kwargs)
     return wrapper
+def es_administrador():
+    """Solo la cuenta cuyo correo coincide con ADMIN_EMAIL puede administrar."""
+    correo_admin = os.environ.get('ADMIN_EMAIL', '').strip().lower()
+    usuario_id = session.get('usuario_id', '')
+    if not correo_admin or not ObjectId.is_valid(usuario_id):
+        return False
+    usuario = usuarios.find_one({'_id': ObjectId(usuario_id)})
+    return bool(usuario and usuario.get('correo', '').strip().lower() == correo_admin)
+
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not session.get('usuario_id'):
+            flash('Inicia sesión con tu cuenta de administrador.', 'info')
+            return redirect(url_for('login'))
+        if not es_administrador():
+            abort(403, description='Acceso exclusivo del administrador.')
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+@app.before_request
+def proteger_api_admin():
+    # Consultas públicas; cualquier cambio de catálogo exige cuenta administradora.
+    if request.path.startswith('/api/videojuegos') and request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        if not es_administrador():
+            return jsonify(error='Acceso exclusivo del administrador. Inicia sesión como administrador.'), 403
+
 
 @app.context_processor
 def datos_sesion():
-    return {'usuario_actual': session.get('usuario_nombre'), 'carrito_cantidad': sum(session.get('carrito', {}).values())}
+    return {'usuario_actual': session.get('usuario_nombre'), 'carrito_cantidad': sum(session.get('carrito', {}).values()), 'es_admin': es_administrador()}
 
 @app.before_request
 def proteger_formularios():
@@ -214,20 +243,24 @@ def detalle(id):
     return render_template('detalle.html', juego=buscar_juego(id))
 
 @app.route('/registrar')
+@admin_required
 def registrar():
     return render_template('registrar.html', categorias=CATEGORIAS)
 
 @app.route('/agregar',methods=['POST'])
+@admin_required
 def agregar():
     juegos.insert_one(leer_datos(request.form))
     return redirect(url_for('inicio'))
 
 @app.route('/lista')
+@admin_required
 def lista():
     lista_juegos=list(juegos.find().sort('nombre',1))
     return render_template('lista.html',juegos=lista_juegos)
 
 @app.route('/editar/<id>',methods=['GET','POST'])
+@admin_required
 def editar(id):
     juego=buscar_juego(id)
     if request.method=='POST':
@@ -236,6 +269,7 @@ def editar(id):
     return render_template('editar.html',juego=juego,categorias=CATEGORIAS)
 
 @app.route('/eliminar/<id>',methods=['POST'])
+@admin_required
 def eliminar(id):
     juego=buscar_juego(id)
     juegos.delete_one({'_id':juego['_id']})
