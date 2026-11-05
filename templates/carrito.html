@@ -1,1 +1,254 @@
-{% extends 'base.html' %}{% block titulo %}Carrito · Game Shop{% endblock %}{% block contenido %}<section class="section narrow"><div class="eyebrow">TU SELECCIÓN</div><h1>🛒 Carrito de compras</h1>{% if elementos %}<div class="cart-items">{% for item in elementos %}<div class="cart-item"><div><h3>{{item.juego.nombre}}</h3><p class="muted">Cantidad: {{item.cantidad}} · ${{'%.2f'|format(item.juego.precio|float)}} MXN por unidad</p></div><strong>${{'%.2f'|format(item.subtotal)}} MXN</strong><form method="post" action="{{url_for('carrito_quitar',id=item.juego._id)}}"><input type="hidden" name="_csrf" value="{{csrf_token}}"><button class="btn outline small">Quitar</button></form></div>{% endfor %}</div><div class="cart-total"><h2>Total: ${{'%.2f'|format(total)}} MXN</h2><p class="muted">Compra de demostración, sin pagos reales ni descuentos de inventario.</p>{% if usuario_actual %}<form method="post" action="{{url_for('comprar')}}"><input type="hidden" name="_csrf" value="{{csrf_token}}"><button class="btn green">✓ Confirmar compra simulada</button></form>{% else %}<p>Para comprar, necesitas una cuenta.</p><a class="btn green" href="{{url_for('crear_cuenta')}}">Crear cuenta</a> <a class="btn outline" href="{{url_for('login')}}">Iniciar sesión</a>{% endif %}</div>{% else %}<div class="panel"><h2>Tu carrito está vacío</h2><a class="btn green" href="{{url_for('inicio')}}">Explorar videojuegos</a></div>{% endif %}</section>{% endblock %}
+
+{% extends 'base.html' %}
+
+{% block titulo %}Carrito · Game Shop{% endblock %}
+
+{% block contenido %}
+
+<section class="section narrow">
+
+    <div class="eyebrow">TU SELECCIÓN</div>
+
+    <h1>🛒 Carrito de compras</h1>
+
+    {% if elementos %}
+
+    <div class="cart-items">
+
+        {% for item in elementos %}
+
+        <div class="cart-item">
+
+            <div>
+                <h3>{{ item.juego.nombre }}</h3>
+
+                <p class="muted">
+                    Cantidad: {{ item.cantidad }}
+                    · ${{ '%.2f'|format(item.juego.precio|float) }}
+                    MXN por unidad
+                </p>
+            </div>
+
+            <strong>
+                ${{ '%.2f'|format(item.subtotal) }} MXN
+            </strong>
+
+            {% if not reserva %}
+
+            <form method="post"
+                  action="{{ url_for('carrito_quitar', id=item.juego._id) }}">
+
+                <input type="hidden"
+                       name="_csrf"
+                       value="{{ csrf_token }}">
+
+                <button class="btn outline small">
+                    Quitar
+                </button>
+
+            </form>
+
+            {% endif %}
+
+        </div>
+
+        {% endfor %}
+
+    </div>
+
+    <div class="cart-total">
+
+        <h2>
+            Total: ${{ '%.2f'|format(total) }} MXN
+        </h2>
+
+        <p class="muted">
+            Compra de demostración. No se realizan pagos reales.
+        </p>
+
+        {% if usuario_actual %}
+
+            {% if reserva %}
+
+                <div class="panel">
+
+                    <h3>Tu carrito está reservado</h3>
+
+                    <p>
+                        Tiempo restante:
+                    </p>
+
+                    <h2 id="contador-reserva"
+                        style="font-size: 2.5rem;">
+                        60 segundos
+                    </h2>
+
+                    <p class="muted">
+                        Confirma antes de que termine el tiempo.
+                    </p>
+
+                    <form method="post"
+                          action="{{ url_for('comprar') }}">
+
+                        <input type="hidden"
+                               name="_csrf"
+                               value="{{ csrf_token }}">
+
+                        <input type="hidden"
+                               name="reserva_id"
+                               value="{{ reserva._id }}">
+
+                        <button class="btn green"
+                                id="btn-confirmar">
+                            ✓ Confirmar compra simulada
+                        </button>
+
+                    </form>
+
+                    <form method="post"
+                          action="{{ url_for('carrito_cancelar') }}"
+                          style="margin-top: 12px;">
+
+                        <input type="hidden"
+                               name="_csrf"
+                               value="{{ csrf_token }}">
+
+                        <input type="hidden"
+                               name="reserva_id"
+                               value="{{ reserva._id }}">
+
+                        <button class="btn outline">
+                            Cancelar reserva
+                        </button>
+
+                    </form>
+
+                </div>
+
+            {% else %}
+
+                <form method="post"
+                      action="{{ url_for('carrito_reservar') }}">
+
+                    <input type="hidden"
+                           name="_csrf"
+                           value="{{ csrf_token }}">
+
+                    <button class="btn green">
+                        Reservar carrito por 60 segundos
+                    </button>
+
+                </form>
+
+                <p class="muted">
+                    Las existencias se apartarán temporalmente.
+                    Si no confirmas en 60 segundos,
+                    la reserva vencerá.
+                </p>
+
+            {% endif %}
+
+        {% else %}
+
+            <p>
+                Para reservar y comprar necesitas una cuenta.
+            </p>
+
+            <a class="btn green"
+               href="{{ url_for('crear_cuenta') }}">
+                Crear cuenta
+            </a>
+
+            <a class="btn outline"
+               href="{{ url_for('login') }}">
+                Iniciar sesión
+            </a>
+
+        {% endif %}
+
+    </div>
+
+    {% else %}
+
+    <div class="panel">
+
+        <h2>Tu carrito está vacío</h2>
+
+        <a class="btn green"
+           href="{{ url_for('inicio') }}">
+            Explorar videojuegos
+        </a>
+
+    </div>
+
+    {% endif %}
+
+</section>
+
+{% if reserva %}
+
+<script>
+(function () {
+    const contador = document.getElementById(
+        "contador-reserva"
+    );
+
+    const botonConfirmar = document.getElementById(
+        "btn-confirmar"
+    );
+
+    let segundos = 60;
+    let consultando = false;
+
+    async function actualizarReserva() {
+        if (consultando) return;
+        consultando = true;
+
+        try {
+            const respuesta = await fetch(
+                "{{ url_for('carrito_estado') }}",
+                {
+                    cache: "no-store",
+                    credentials: "same-origin"
+                }
+            );
+
+            if (!respuesta.ok) {
+                throw new Error("No se pudo consultar la reserva");
+            }
+
+            const datos = await respuesta.json();
+
+            if (!datos.activa || datos.segundos <= 0) {
+                contador.textContent = "Reserva vencida";
+
+                if (botonConfirmar) {
+                    botonConfirmar.disabled = true;
+                }
+
+                window.location.reload();
+                return;
+            }
+
+            segundos = datos.segundos;
+            contador.textContent =
+                segundos + " segundos";
+
+        } catch (error) {
+            contador.textContent =
+                "Verificando reserva...";
+
+        } finally {
+            consultando = false;
+        }
+    }
+
+    actualizarReserva();
+
+    setInterval(actualizarReserva, 1000);
+})();
+</script>
+
+{% endif %}
+
+{% endblock %}
