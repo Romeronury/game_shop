@@ -80,7 +80,7 @@
 
                     <h2 id="contador-reserva"
                         style="font-size: 2.5rem;">
-                        60 segundos
+                        5 minutos
                     </h2>
 
                     <p class="muted">
@@ -135,14 +135,14 @@
                            value="{{ csrf_token }}">
 
                     <button class="btn green">
-                        Reservar carrito por 60 segundos
+                       Reservar carrito por 5 minutos
                     </button>
 
                 </form>
 
                 <p class="muted">
                     Las existencias se apartarán temporalmente.
-                    Si no confirmas en 60 segundos,
+                    Si no confirmas en 5 minutos,
                     la reserva vencerá.
                 </p>
 
@@ -197,7 +197,7 @@
         "btn-confirmar"
     );
 
-    let segundos = 60;
+    let segundos = 300;
     let consultando = false;
 
     async function actualizarReserva() {
@@ -220,15 +220,18 @@
             const datos = await respuesta.json();
 
             if (!datos.activa || datos.segundos <= 0) {
-                contador.textContent = "Reserva vencida";
+    contador.textContent = "Reserva vencida";
 
-                if (botonConfirmar) {
-                    botonConfirmar.disabled = true;
-                }
+    if (botonConfirmar) {
+        botonConfirmar.disabled = true;
+    }
 
-                window.location.reload();
-                return;
-            }
+    setTimeout(() => {
+        window.location.reload();
+    }, 8000);
+
+    return;
+}
 
             segundos = datos.segundos;
             contador.textContent =

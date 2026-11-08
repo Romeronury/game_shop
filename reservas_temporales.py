@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 from pymongo import ReturnDocument
 
-RESERVA_SEGUNDOS = 60
+RESERVA_SEGUNDOS = 300
 
 
 def ahora():
